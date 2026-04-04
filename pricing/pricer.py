@@ -168,6 +168,34 @@ class PricerClass:
     def amountOfRisk(self, tau, deltaTau, n_steps = 1000):
         return self.amountOfRisk_drift(tau = tau, deltaTau= deltaTau, n_steps=n_steps) + self.amountOfRisk_convexity(tau = tau, deltaTau=deltaTau, n_steps = n_steps)
 
-    
+    ### Two-premia setup
+
+    def amountOfRisk_drift_medium(self, tau, deltaTau, n_steps = 1000):
+        '''
+         contribution to the risk premium of the drift adjustment relating to the medium factor
+        '''
+        omega = self.omegaMatrix()
+        grid = np.linspace(0.0, deltaTau, n_steps)
+        vals = np.zeros_like(grid)
+        for k, s in enumerate(grid):
+            z = tau + deltaTau - s
+            gamma = self.factorLoadings(z)
+            vals[k] = z * (gamma @ omega)[0]
+        rp = np.trapz(vals, grid)
+        return rp
+
+    def amountOfRisk_drift_long(self, tau, deltaTau, n_steps = 1000):
+        '''
+        contribution to the risk premium of the drift adjustment relating to the long factor
+        '''
+        omega = self.omegaMatrix()
+        grid = np.linspace(0.0, deltaTau, n_steps)
+        vals = np.zeros_like(grid)
+        for k, s in enumerate(grid):
+            z = tau + deltaTau - s
+            gamma = self.factorLoadings(z)
+            vals[k] = z * (gamma @ omega)[1]
+        rp = np.trapz(vals, grid)
+        return rp
     
     

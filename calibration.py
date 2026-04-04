@@ -495,3 +495,127 @@ class Calibration():
                                                      sigma_m=sigma_m, sigma_l=sigma_l, rho=rho, mu=mu)
 
         return f_tau - lambdaSeries * (rp_tau / deltaTau)
+    
+    def lambdaRegression_twoPremia(self, tau_0, tauList, deltaTau, curve,
+                                   alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu, n_steps=1000):
+        '''
+        cross-sectional regression to determine risk premia to two factors
+        '''
+        tauList = [x for x in tauList if x != tau_0]
+        pricer = self.pricer
+        pricer.updParams(alpha_r=alpha_r, alpha_m=alpha_m, alpha_l=alpha_l,
+                        sigma_m=sigma_m, sigma_l=sigma_l, rho=rho, mu=mu)
+        
+        forwardTau_0 = self.observedForwardRate(tau=tau_0, deltaTau=deltaTau, curve = curve)
+        driftMedium_tau0 = pricer.amountOfRisk_drift_medium(tau = tau_0, deltaTau=deltaTau, n_steps = n_steps)
+        driftLong_tau0 = pricer.amountOfRisk_drift_long(tau = tau_0, deltaTau=deltaTau, n_steps = n_steps)
+        convexity_tau0 = pricer.amountOfRisk_convexity(tau = tau_0, deltaTau=deltaTau, n_steps = n_steps)
+        F = np.array([
+            self.observedForwardRate(tau = x, deltaTau=deltaTau, curve = curve) - forwardTau_0 + 
+            (pricer.amountOfRisk_convexity(tau = x, deltaTau=deltaTau, n_steps = n_steps) - convexity_tau0) * 1/deltaTau
+        for x in tauList])
+
+        D = np.array([
+            [pricer.amountOfRisk_drift_medium(tau = x, deltaTau= deltaTau, n_steps= n_steps) - driftMedium_tau0, 
+             pricer.amountOfRisk_drift_long(tau = x, deltaTau= deltaTau, n_steps = n_steps) - driftLong_tau0]
+        for x in tauList]) * 1/deltaTau
+
+        lambdaOLS = np.linalg.inv(D.T @ D) @ D.T @ F
+        return (F, D, lambdaOLS)
+
+    def lambdaRegression_twoPremia_ts(self, tauList, deltaTau,
+                                   alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu, n_steps=1000):
+        '''
+        regresses realized returns of the strategy exposed to risk premia onto its loadings. in practice:
+        R_t^tau = f_t(tau) - r_(t+1)
+        Regresses R_t^tau + convexity term = loading_m * lambda_m + loading_l * lambda_l
+        '''
+        
+        pricer = self.pricer
+        pricer.updParams(alpha_r=alpha_r, alpha_m=alpha_m, alpha_l=alpha_l,
+                        sigma_m=sigma_m, sigma_l=sigma_l, rho=rho, mu=mu)
+        
+        shortRateSeries = self.termStructurePath[:, 0]
+        y = []
+        X = []
+        for tau in tauList:
+            forwardSeries_tau = self.observedForwardRateSeries(tau = tau, deltaTau = deltaTau)
+            realizedReturn = (forwardSeries_tau[:-1] - shortRateSeries[1:]) * deltaTau
+            driftMedium = pricer.amountOfRisk_drift_medium(tau = tau, deltaTau=deltaTau, n_steps=n_steps)
+            driftLong = pricer.amountOfRisk_drift_long(tau=tau, deltaTau=deltaTau, n_steps=n_steps)
+            convexity = pricer.amountOfRisk_convexity(tau = tau, deltaTau=deltaTau, n_steps=n_steps)
+
+            y.append(realizedReturn + convexity)
+            X_tau = np.column_stack([
+                np.full(realizedReturn.shape, driftMedium),
+                np.full(realizedReturn.shape, driftLong)
+            ])
+            X.append(X_tau)
+        
+        y = np.concatenate(y)
+        X = np.vstack(X)
+        lambdaOLS = np.linalg.inv(X.T @ X) @ X.T @ y
+        return y, X, lambdaOLS
+    
+    def lambdaRegression_twoPremia_ts_exp(self, tauList, deltaTau,
+                                   alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu, 
+                                   n_steps=1000, min_obs = 60):
+        
+        '''
+        runs the same regressions as lambdaRegression_twoPremia_ts() but in expanding windows
+        '''
+        pricer = self.pricer
+        pricer.updParams(alpha_r=alpha_r, alpha_m=alpha_m, alpha_l=alpha_l,
+                        sigma_m=sigma_m, sigma_l=sigma_l, rho=rho, mu=mu)
+        
+        shortRateSeries = self.termStructurePath[:, 0]
+        T = len(shortRateSeries) - 1
+        y = []
+        X = []
+        for tau in tauList:
+            forwardSeries_tau = self.observedForwardRateSeries(tau = tau, deltaTau = deltaTau)
+            realizedReturn = (forwardSeries_tau[:-1] - shortRateSeries[1:]) * deltaTau
+            driftMedium = pricer.amountOfRisk_drift_medium(tau = tau, deltaTau=deltaTau, n_steps=n_steps)
+            driftLong = pricer.amountOfRisk_drift_long(tau=tau, deltaTau=deltaTau, n_steps=n_steps)
+            convexity = pricer.amountOfRisk_convexity(tau = tau, deltaTau=deltaTau, n_steps=n_steps)
+
+            y.append(realizedReturn + convexity)
+            X_tau = np.column_stack([
+                np.full(realizedReturn.shape, driftMedium),
+                np.full(realizedReturn.shape, driftLong)
+            ])
+            X.append(X_tau)
+        
+        y_mat = np.column_stack(y)
+        X1_mat = np.column_stack([X[:, 0] for X in X])
+        X2_mat = np.column_stack([X[:, 1] for X in X])
+
+        lambda_series = np.full((T, 2), np.nan)
+        r2_series = np.full(T, np.nan)
+
+        for t in range(min_obs - 1, T):
+            # expanding window 0..t
+            y_win = y_mat[:t+1, :].reshape(-1)
+            X_win = np.column_stack([
+                X1_mat[:t+1, :].reshape(-1),
+                X2_mat[:t+1, :].reshape(-1)
+            ])
+
+            beta, _, _, _ = np.linalg.lstsq(X_win, y_win, rcond=None)
+            lambda_series[t, :] = beta
+
+            fitted = X_win @ beta
+            rss = np.sum((y_win - fitted) ** 2)
+            tss = np.sum((y_win - y_win.mean()) ** 2)
+            r2_series[t] = 1 - rss / tss if tss > 0 else np.nan
+
+        return {
+            "lambda_m_series": lambda_series[:, 0],
+            "lambda_l_series": lambda_series[:, 1],
+            "lambda_series": lambda_series,
+            "r2_series": r2_series,
+            "y_mat": y_mat,
+            "X1_mat": X1_mat,
+            "X2_mat": X2_mat,
+            "tauList": tauList
+        }
