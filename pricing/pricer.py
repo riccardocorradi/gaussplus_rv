@@ -139,7 +139,7 @@ class PricerClass:
     def amountOfRisk(self, tau, deltaTau, n_steps = 1000):
 
         omega = self.omegaMatrix()
-        grid = np.linspace(0.0, deltaTau)
+        grid = np.linspace(0.0, deltaTau, n_steps)
         vals = np.zeros_like(grid)
         for k, s in enumerate(grid):
             z = tau + deltaTau - s
