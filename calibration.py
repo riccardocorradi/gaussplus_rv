@@ -290,7 +290,7 @@ class Calibration():
             'message': result.message
     }
 
-    # Functions to calibrate Mu
+    # Functions to calibrate Mu and extract factors by matching the 2y and 10y to m_t and l_t
 
     def extractLatentFactors(self, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu):
         pricer = self.pricer
@@ -356,6 +356,20 @@ class Calibration():
             'message': result.message
         }
     
+    # Functions to calibrate Mu and extract factors by matching the 2y-forward 1y and 10y-forward 1y to m_t and l_t
+
+    def marketForwardRateSeries(self, tau, deltaTau):
+        assert (tau + deltaTau) in self.maturities, f'tau + deltaTau = {tau+deltaTau} must be in the maturity set'
+        termStructurePath = self.termStructurePath[:, 1:]
+        frontYield = termStructurePath[:, np.where(self.maturities == tau)[0][0]]
+        backYield = termStructurePath[:, np.where(self.maturities == tau + deltaTau)[0][0]]
+        return backYield        
+
+    def extractLatentFactors_fwd(self, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu):
+        pricer = self.pricer
+        pricer.updParams(alpha_r = alpha_r, alpha_m = alpha_m, alpha_l = alpha_l, sigma_m = sigma_m, sigma_l = sigma_l, rho = rho, mu = mu)
+
+
     # Risk premia calculation thru forwards
 
     def observedForwardRate(self, curve, tau, deltaTau):
