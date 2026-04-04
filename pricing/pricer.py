@@ -97,6 +97,20 @@ class PricerClass:
                 outputSum += mult_factor * loadingSum
         return outputSum
     
+    def factorLoadings_forwards(self, tau, deltaTau):
+        
+        bVector_tauPrime = self.bVector(tau = tau + deltaTau)
+        bVector_tau = self.bVector(tau = tau)
+        a = self.aMatrix()
+        a_inv = np.linalg.inv(a)
+        return (bVector_tauPrime - bVector_tau) @ a_inv * 1/deltaTau
+    
+    def convexityTerm_forwards(self, tau, deltaTau):
+        cTerm_tau = self.convexityTerm(tau = tau)
+        cTerm_tauPrime = self.convexityTerm(tau = tau + deltaTau)
+        return (cTerm_tauPrime - cTerm_tau)/deltaTau
+
+
     def bondYield(self, tau, r, m, l):
         factor_loadings = self.factorLoadings(tau)
         convexity_term = self.convexityTerm(tau)
