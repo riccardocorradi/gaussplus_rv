@@ -76,7 +76,6 @@ def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6)):
     ax.set_ylabel("Maturity")
     ax.set_title("Root Mean Squared Fitting Errors (bps)")
 
-
     norm = im.norm
     threshold = (norm.vmax + norm.vmin) / 2
 
@@ -111,4 +110,45 @@ def actualVsFittedCurve(targetDate, fittedTs_full_df, termStructurePath,
     ax[1].bar(selectedTenors, selectedMispr, color = 'purple')
     ax[1].yaxis.set_major_formatter(mtick.FuncFormatter(lambda y, _: f'{y*100:.0f} bps'))
     ax[1].set_title(f'Fitted yield - Actual yield on {targetDate}')
+
+def fittingErrorsHeatmap_fwd(rmse_by_x, x_list, figsize=(20, 5)):
+    
+    fig, axes = plt.subplots(1, len(x_list), figsize=figsize, sharey=True)
+
+    cmap = plt.cm.Blues
+    vmin = min(rmse_by_x[x].min().min() for x in x_list)
+    vmax = max(rmse_by_x[x].max().max() for x in x_list)
+
+    for ax, x in zip(axes, x_list):
+        fittingErrors_byYear = rmse_by_x[x]
+
+        im = ax.imshow(fittingErrors_byYear.values, aspect='auto', cmap=cmap, vmin=vmin, vmax=vmax)
+
+        ax.set_xticks(np.arange(len(fittingErrors_byYear.columns)))
+        ax.set_yticks(np.arange(len(fittingErrors_byYear.index)))
+        ax.set_xticklabels(fittingErrors_byYear.columns)
+        ax.set_yticklabels(fittingErrors_byYear.index)
+        ax.set_xlabel("Year")
+        ax.set_title(f"{x}y fwd")
+
+        norm = im.norm
+        threshold = (norm.vmax + norm.vmin) / 2
+
+        # annotate
+        for i in range(fittingErrors_byYear.shape[0]):
+            for j in range(fittingErrors_byYear.shape[1]):
+                value = fittingErrors_byYear.iloc[i, j]
+                color = "white" if norm(value) > norm(threshold) else "black"
+                ax.text(j, i, f"{value:.1f}",
+                        ha="center", va="center", fontsize=6, color=color)
+
+    axes[0].set_ylabel("Maturity")
+
+    # shared colorbar
+    cbar = fig.colorbar(im, ax=axes, orientation='horizontal', fraction=0.05, pad=0.01)
+    cbar.set_label("bps")
+
+    plt.suptitle("Root Mean Squared Fitting Errors (bps)")
+    plt.tight_layout(rect=[0, 0.2, 1, 1])
+    plt.show()
 
