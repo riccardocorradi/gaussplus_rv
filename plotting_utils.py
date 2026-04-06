@@ -111,6 +111,40 @@ def actualVsFittedCurve(targetDate, fittedTs_full_df, termStructurePath,
     ax[1].yaxis.set_major_formatter(mtick.FuncFormatter(lambda y, _: f'{y*100:.0f} bps'))
     ax[1].set_title(f'Fitted yield - Actual yield on {targetDate}')
 
+def currentErrorsHeatmap_fwd(fittedForwardTs_full, forwardTermStructurePath, figsize = (12, 6)):
+    fig, ax = plt.subplots(figsize=figsize)
+    errorData = pd.DataFrame({x: 
+              100 *(fittedForwardTs_full[x].iloc[-1] - forwardTermStructurePath[x].iloc[-1]) 
+              for x in fittedForwardTs_full.keys()}).round(6)
+    cmap = plt.cm.Blues
+    im = ax.imshow(errorData.values, aspect='auto', cmap = cmap)
+
+    ax.set_xticks(np.arange(len(errorData.columns)))
+    ax.set_yticks(np.arange(len(errorData.index)))
+    ax.set_xticklabels(errorData.columns)
+    ax.set_yticklabels(errorData.index)
+    ax.set_xlabel("Maturity")
+    ax.set_ylabel("Years Forward")
+    ax.set_title("Root Mean Squared Fitting Errors (bps)")
+
+    norm = im.norm
+    threshold = (norm.vmax + norm.vmin) / 2
+
+    # annotate cells
+    for i in range(errorData.shape[0]):
+        for j in range(errorData.shape[1]):
+            value = errorData.iloc[i, j]
+            color = "white" if norm(value) > norm(threshold) else "black"
+            ax.text(j, i, f"{value:.1f}",
+                    ha="center", va="center", fontsize=8, color=color)
+
+    # colorbar
+    cbar = plt.colorbar(im)
+    cbar.set_label("bps")
+
+    plt.tight_layout()
+    plt.show()
+
 def fittingErrorsHeatmap_fwd(rmse_by_x, x_list, figsize=(20, 5)):
     
     fig, axes = plt.subplots(1, len(x_list), figsize=figsize, sharey=True)
