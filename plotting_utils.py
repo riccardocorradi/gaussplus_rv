@@ -123,9 +123,9 @@ def currentErrorsHeatmap_fwd(fittedForwardTs_full, forwardTermStructurePath, fig
     ax.set_yticks(np.arange(len(errorData.index)))
     ax.set_xticklabels(errorData.columns)
     ax.set_yticklabels(errorData.index)
-    ax.set_xlabel("Maturity")
-    ax.set_ylabel("Years Forward")
-    ax.set_title("Root Mean Squared Fitting Errors (bps)")
+    ax.set_ylabel("Maturity")
+    ax.set_xlabel("Years Forward")
+    ax.set_title(f"Errors of fit on forwards as of {fittedForwardTs_full[1].iloc[-1].name.strftime('%Y-%m-%d')}")
 
     norm = im.norm
     threshold = (norm.vmax + norm.vmin) / 2
@@ -134,9 +134,12 @@ def currentErrorsHeatmap_fwd(fittedForwardTs_full, forwardTermStructurePath, fig
     for i in range(errorData.shape[0]):
         for j in range(errorData.shape[1]):
             value = errorData.iloc[i, j]
-            color = "white" if norm(value) > norm(threshold) else "black"
+            if pd.isna(value):
+                continue
+            else:
+                color = "white" if norm(value) > norm(threshold) else "black"
             ax.text(j, i, f"{value:.1f}",
-                    ha="center", va="center", fontsize=8, color=color)
+                        ha="center", va="center", fontsize=8, color=color)
 
     # colorbar
     cbar = plt.colorbar(im)
@@ -171,10 +174,13 @@ def fittingErrorsHeatmap_fwd(rmse_by_x, x_list, figsize=(20, 5)):
         # annotate
         for i in range(fittingErrors_byYear.shape[0]):
             for j in range(fittingErrors_byYear.shape[1]):
-                value = fittingErrors_byYear.iloc[i, j]
-                color = "white" if norm(value) > norm(threshold) else "black"
-                ax.text(j, i, f"{value:.1f}",
-                        ha="center", va="center", fontsize=6, color=color)
+                if pd.isna(fittingErrors_byYear.iloc[i, j]):
+                    continue
+                else:
+                    value = fittingErrors_byYear.iloc[i, j]
+                    color = "white" if norm(value) > norm(threshold) else "black"
+                    ax.text(j, i, f"{value:.1f}",
+                            ha="center", va="center", fontsize=6, color=color)
 
     axes[0].set_ylabel("Maturity")
 
