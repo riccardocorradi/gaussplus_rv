@@ -551,6 +551,173 @@ class Calibration():
               alpha_l: {best["alpha_l"]}, loss: {best["loss"]},\
               success: {best["success"]}, message: {best["message"]}')
         return best
+    
+    # Functions to calibrate sigmas via forwards
+
+    def modelImpliedVariance_fwd(self, tau, deltaTau, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho):
+        '''
+        computes the model implied variance of the change in a given forward rate
+        '''
+        pricer = self.pricer
+        pricer.updParams(alpha_r = alpha_r, alpha_m = alpha_m, alpha_l = alpha_l, sigma_m = sigma_m, sigma_l = sigma_l, rho = rho)
+        omega = pricer.omegaMatrix()
+        omegaTilde = omega[1:3, 0:2]
+        gammaTildeTauStar = pricer.factorLoadings_forwards(tau = tau, deltaTau= deltaTau)[1:3]
+        return gammaTildeTauStar @ omegaTilde @ omegaTilde.T @ gammaTildeTauStar.T
+    
+    def modelImpliedVarcov_fwd(self, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho):
+        '''
+        computes the full model implied varcov matrix of changes in forward rates
+        '''
+        pricer = self.pricer
+        pricer.updParams(alpha_r = alpha_r, alpha_m = alpha_m, alpha_l = alpha_l, sigma_m = sigma_m, sigma_l = sigma_l, rho = rho)
+        omega = pricer.omegaMatrix()
+        omegaTilde = omega[1:3, 0:2]   # 2x2
+
+        gammaTilde = np.array([
+            pricer.factorLoadings_forwards(tau=key[0], deltaTau=key[1])[1:3]
+            for key in self.allForwardsPath.keys()
+        ]) 
+
+        return gammaTilde @ omegaTilde @ omegaTilde.T @ gammaTilde.T   # NxN
+
+    def empiricalVariance_fwd(self, tau, deltaTau, alpha_r):
+        '''
+        computes the empirical variance of changes in a given forward rate, net of the contribution of the short rate
+        '''
+        allForwardsPath_sub = self.subtractShortRate_fwd(alpha_r = alpha_r)
+        targetForward = allForwardsPath_sub[(tau, deltaTau)]
+        targetForward_chg = np.diff(targetForward)
+        return np.var(targetForward_chg, ddof = 1)
+
+    def empiricalVarcov_fwd(self, alpha_r):
+        '''
+        computes the full varcov matrix of changes in forward rates, net of the contribution of the short rate
+        '''
+        allForwardsPath_sub = self.subtractShortRate_fwd(alpha_r = alpha_r)
+        targetForwards = np.column_stack([allForwardsPath_sub[key] for key in self.allForwardsPath.keys()])
+        targetForwards_chg = np.diff(targetForwards, axis = 0)
+        return np.cov(targetForwards_chg, rowvar = False, ddof = 1)
+    
+    def objectiveFunction_sigma_fwd(self, x, alpha_r, alpha_m, alpha_l):
+        '''
+        matching model-implied VARIANCES to empirical VARIANCES for forwards
+        '''
+        sigma_m, sigma_l, rho = x
+        total = 0
+        for key in self.allForwardsPath.keys():
+            modelVar = self.modelImpliedVariance_fwd(tau=key[0], deltaTau=key[1], alpha_r=alpha_r, alpha_m=alpha_m, alpha_l=alpha_l, sigma_m=sigma_m, sigma_l=sigma_l, rho=rho)
+            empiricalVar = self.empiricalVariance_fwd(tau=key[0], deltaTau=key[1], alpha_r=alpha_r)
+            total += (modelVar - empiricalVar)**2
+        return total
+
+    def calibrateSigma_fwd(self, alpha_r, alpha_m, alpha_l, initialGuess = [0.1, 0.1, 0]):
+        bounds = [(1e-6, None), (1e-6, None), (-0.999, 0.999)]
+        result = minimize(self.objectiveFunction_sigma_fwd, 
+                          x0=initialGuess, 
+                          args=(alpha_r, alpha_m, alpha_l),
+                          bounds=bounds,
+                          method = 'L-BFGS-B')
+        sigma_m, sigma_l, rho = result.x
+        print(f'sigma_m: {sigma_m}, sigma_l: {sigma_l}, rho: {rho}, loss: {result.fun}, success: {result.success}, message: {result.message}')
+        return {'sigma_m': sigma_m, 'sigma_l': sigma_l, 'rho': rho, 'loss': result.fun, 'success': result.success, 'message': result.message}
+
+    def objectiveFunction_sigma_cov_fwd(self, x, alpha_r, alpha_m, alpha_l):
+        '''
+        matching model-implied FULL VARCOV to empirical VARCOV for forwards
+        '''
+        sigma_m, sigma_l, rho = x
+
+        modelCov = self.modelImpliedVarcov_fwd(
+            alpha_r=alpha_r,
+            alpha_m=alpha_m,
+            alpha_l=alpha_l,
+            sigma_m=sigma_m,
+            sigma_l=sigma_l,
+            rho=rho
+        )
+
+        empiricalCov = self.empiricalVarcov_fwd(alpha_r=alpha_r)
+
+        diff = modelCov - empiricalCov
+        return np.sum(diff**2)
+    
+    def calibrateSigmaCov_fwd(self, alpha_r, alpha_m, alpha_l, initialGuess=[0.1, 0.1, 0.0]):
+        bounds = [(1e-6, None), (1e-6, None), (-0.999, 0.999)]
+
+        result = minimize(
+            self.objectiveFunction_sigma_cov_fwd,
+            x0=initialGuess,
+            args=(alpha_r, alpha_m, alpha_l),
+            bounds=bounds,
+            method='L-BFGS-B'
+        )
+
+        sigma_m, sigma_l, rho = result.x
+
+        print(
+            f'sigma_m: {sigma_m}, sigma_l: {sigma_l}, rho: {rho}, '
+            f'loss: {result.fun}, success: {result.success}, message: {result.message}'
+        )
+
+        return {'sigma_m': sigma_m, 'sigma_l': sigma_l, 'rho': rho, 'loss': result.fun, 'success': result.success, 'message': result.message}
+
+    def modelImpliedVarcov_chol_fwd(self, alpha_r, alpha_m, alpha_l, x):
+        '''
+        computes the model implied varcov given a candidate x from the optimizer, fed into choleskyCovariance
+        to build the model-implied varcov for forwards
+        '''
+        pricer = self.pricer
+        pricer.updParams(alpha_r = alpha_r, alpha_m = alpha_m, alpha_l = alpha_l)
+        
+        gammaTilde = np.array([
+            pricer.factorLoadings_forwards(tau=key[0], deltaTau=key[1])[1:3]
+            for key in self.allForwardsPath.keys()
+        ]) 
+
+        Sigma_x = self.choleskyCovariance(x)                       # 2x2
+
+        return gammaTilde @ Sigma_x @ gammaTilde.T   # NxN
+
+    def objectiveFunction_sigma_chol_fwd(self, x, alpha_r, alpha_m, alpha_l):
+        '''
+        matching model-implied FULL VARCOV to empirical VARCOV for forwards, but search space is the cholesky space
+        to ensure positive definitness without constrains
+        '''
+        modelCov = self.modelImpliedVarcov_chol_fwd(alpha_r, alpha_m, alpha_l, x)
+        empiricalCov = self.empiricalVarcov_fwd(alpha_r)
+
+        diff = modelCov - empiricalCov
+        return np.sum(diff**2)
+    
+    def calibrateSigmaChol_fwd(self, alpha_r, alpha_m, alpha_l, initialGuess=[-4.5, -4.5, 0.0]):
+        result = minimize(
+            self.objectiveFunction_sigma_chol_fwd,
+            x0=initialGuess,
+            args=(alpha_r, alpha_m, alpha_l),
+            method='L-BFGS-B'
+        )
+
+        Sigma_x = self.choleskyCovariance(result.x)
+
+        sigma_m = np.sqrt(Sigma_x[0, 0])
+        sigma_l = np.sqrt(Sigma_x[1, 1])
+        rho = Sigma_x[0, 1] / (sigma_m * sigma_l)
+
+        print(
+            f'sigma_m: {sigma_m}, sigma_l: {sigma_l}, rho: {rho}, '
+            f'loss: {result.fun}, success: {result.success}, message: {result.message}'
+        )
+
+        return {
+            'sigma_m': sigma_m,
+            'sigma_l': sigma_l,
+            'rho': rho,
+            'Sigma_x': Sigma_x,
+            'loss': result.fun,
+            'success': result.success,
+            'message': result.message
+        }
 
     # Risk premia calculation thru forwards
 
