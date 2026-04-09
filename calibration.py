@@ -429,8 +429,10 @@ class Calibration():
         pricer.updParams(alpha_r = alpha_r, alpha_m = alpha_m, alpha_l = alpha_l, sigma_m = sigma_m, sigma_l = sigma_l, rho = rho, mu = mu)
         
         if self.useInputForwards:
-            midForwardSeries = self.forwardTermStructurePath[:, np.where(self.maturities == self.fairly_priced_fwd[0])[0][0]]
-            longForwardSeries = self.forwardTermStructurePath[:, np.where(self.maturities == self.fairly_priced_fwd[1])[0][0]]
+            midForwardSeries = self.allForwardsPath[self.fairly_priced_fwdKeys[0]]
+            longForwardSeries = self.allForwardsPath[self.fairly_priced_fwdKeys[1]]
+            #midForwardSeries = self.forwardTermStructurePath[:, np.where(self.maturities == self.fairly_priced_fwd[0])[0][0]]
+            #longForwardSeries = self.forwardTermStructurePath[:, np.where(self.maturities == self.fairly_priced_fwd[1])[0][0]]
         else:
             midForwardSeries = self.observedForwardRateSeries(tau = self.fairly_priced_fwd[0], deltaTau= deltaTau)
             longForwardSeries = self.observedForwardRateSeries(tau = self.fairly_priced_fwd[1], deltaTau= deltaTau)
@@ -714,6 +716,79 @@ class Calibration():
             'sigma_l': sigma_l,
             'rho': rho,
             'Sigma_x': Sigma_x,
+            'loss': result.fun,
+            'success': result.success,
+            'message': result.message
+        }
+    
+    # calibrate mu to match the forward surface instead of spot
+
+    def fittedForwardsFromMu(self, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu, extraction):
+        '''
+        get the fitted forward rates given a candidate mu, once you calibrated alpha and sigma
+        extraction == 'spot' uses fairly priced spot rates (e.g. 2y, 10y) to extract m_t, l_t
+        extraction == 'fwd' uses fairly priced forwards (e.g. 2y1y, 10y1y) to extract m_t, l_t
+        '''
+        mu = float(mu)
+        if extraction == 'spot':
+            lf = self.extractLatentFactors(alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu)
+        elif extraction == 'fwd':
+            lf = self.extractLatentFactors_fwd(alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu, deltaTau= self.fwd_deltaTau)
+        else:
+            raise ValueError("extraction must be 'spot' or 'fwd'")
+        pricer = self.pricer
+        pricer.updParams(alpha_r = alpha_r, alpha_m = alpha_m, alpha_l = alpha_l, sigma_m = sigma_m, sigma_l = sigma_l, rho = rho, mu = mu)
+        shortRatePath = self.termStructurePath[:, 0]
+
+        fittedYields = np.array([
+            pricer.termStructure(
+                maturities=self.maturities,
+                factors=np.array([shortRatePath[t], lf[t, 0], lf[t, 1]])
+            )
+            for t in range(len(shortRatePath))
+        ])
+        maturity_to_idx = {tau: i for i, tau in enumerate(self.maturities)}
+        fittedForwards = np.column_stack([
+            (
+                (tau + deltaTau) * fittedYields[:, maturity_to_idx[tau + deltaTau]]
+                - tau * fittedYields[:, maturity_to_idx[tau]]
+            ) / deltaTau
+            for tau, deltaTau in self.allForwardsPath.keys()
+        ])
+        return fittedForwards
+            
+    
+    def objectiveFunction_mu_fwd(self, x, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, extraction, lossDecayFactor = None):
+        if lossDecayFactor:
+            lossDecayFunction = lambda x: lossDecayFactor**(x/252)
+        else:
+            lossDecayFunction = self.lossDecayFunction
+
+        mu = float(x[0]) if np.ndim(x) > 0 else float(x)
+        fittedForwards = self.fittedForwardsFromMu(alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, mu, extraction)
+        trueForwards = np.column_stack([self.allForwardsPath[key] for key in self.allForwardsPath.keys()])
+        #trueForwards = {key: self.allForwardsPath[key] for key in self.allForwardsPath.keys()}
+        decayWeights = np.array([lossDecayFunction(i) for i in range(fittedForwards.shape[0] - 1, -1, -1)])
+        return np.dot(decayWeights, np.sum((fittedForwards - trueForwards)**2, axis=1))
+    
+    def calibrateMu_fwd(self, alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, initialGuess = 0.0, extraction = 'fwd', lossDecayFactor = None):
+        if not lossDecayFactor:
+            lossDecayFactor = self.lossDecayFactor
+        result = minimize(
+            self.objectiveFunction_mu_fwd,
+            x0=initialGuess,
+            args=(alpha_r, alpha_m, alpha_l, sigma_m, sigma_l, rho, extraction, lossDecayFactor),
+            method='L-BFGS-B'
+        )
+
+        mu = result.x[0]
+
+        print(
+            f'mu: {mu}, loss: {result.fun}, success: {result.success}, message: {result.message}'
+        )
+
+        return {
+            'mu': mu,
             'loss': result.fun,
             'success': result.success,
             'message': result.message
