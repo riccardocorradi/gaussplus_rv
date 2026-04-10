@@ -488,6 +488,9 @@ class Calibration():
         benchForwardLoadings = np.array([pricer.factorLoadings_forwards(tau=x, deltaTau=y)[1:3] for x, y in self.fairly_priced_fwdKeys])
         gammaTildeTau = pricer.factorLoadings_forwards(tau = tau, deltaTau= deltaTau)[1:3]
         
+        if np.linalg.cond(benchForwardLoadings) > 1e10:
+            raise ValueError("Near-singular benchForwardLoadings")
+
         return gammaTildeTau @ np.linalg.inv(benchForwardLoadings)
     
     def regression_fwd(self, alpha_r = None):
@@ -500,9 +503,11 @@ class Calibration():
         fairlyPriced = self.fairly_priced_fwdKeys
         betaStore = {}
         X = np.column_stack([allForwardsPath_sub[fpKey] for fpKey in fairlyPriced])
+        
         for key in allForwardsPath_sub.keys():            
             y = allForwardsPath_sub[key]
-            beta = np.linalg.inv(X.T @ X) @ X.T @ y
+            beta = np.linalg.lstsq(X, y, rcond=None)[0]
+            #beta = np.linalg.inv(X.T @ X) @ X.T @ y
             betaStore[key] = beta
         return betaStore
 
