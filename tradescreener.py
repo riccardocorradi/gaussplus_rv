@@ -127,6 +127,7 @@ class tradeScreener:
         trades_df = trades_df[['entry_date', 'exit_date', 'side', 'entry_misp', 'exit_misp', 'entry_signal', 'exit_signal']]
         trades_df['pnl'] = 2*((trades_df['side'] == 'LONG').astype(int) - 0.5) * (trades_df['exit_misp'] - trades_df['entry_misp'])
         trades_df['days'] = (trades_df['exit_date'] - trades_df['entry_date']).dt.days
+        trades_df['hit'] = trades_df['pnl'] > 0
         return trades_df
     
     def allOutrightBacktest(self, startDt, endDt, shortW, longW, standardW = 14):
