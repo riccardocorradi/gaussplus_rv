@@ -326,8 +326,65 @@ class tradeScreener:
             outputdf = pd.concat([outputdf, summaryDf])
         #outputdf = outputdf.style.format("{:.6f}")
         return outputdf.round(6)
-
-
     
+    def allTradesOutrights(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+        results_dict = {}
+        for maturity in self.maturitySet:
+                    modelSeries = self.modelData[maturity][startDt:endDt]
+                    actualSeries = self.actualData[maturity][startDt:endDt]
+                    performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
+                                                            actualSeries=actualSeries,
+                                                            startDt = startDt, endDt= endDt,
+                                                            shortW = shortW, longW = longW, standardW = standardW,
+                                                            numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                    performanceDf['point'] = f'{maturity}y'
+                    performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
+                    results_dict[maturity] = performanceDf
 
-        
+
+        return results_dict
+
+    def allTradesSlopes(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+        slopeDict = self.buildSlopes()
+        modelSlopes = slopeDict['model']
+        actualSlopes = slopeDict['actual']
+        results_dict = {}
+        for targetSlope in modelSlopes.columns:
+            modelSeries = modelSlopes[targetSlope][startDt:endDt]
+            actualSeries = actualSlopes[targetSlope][startDt:endDt]
+            
+            performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
+                                                       actualSeries=actualSeries,
+                                                       startDt = startDt, endDt= endDt,
+                                                       shortW = shortW, longW = longW, standardW = standardW, numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+            performanceDf['point'] = targetSlope
+            performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
+            results_dict[targetSlope] = performanceDf
+
+        return results_dict
+    
+    def allTradesFlies(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
+        flyDict = self.buildFlies()
+        modelFlies = flyDict['model']
+        actualFlies = flyDict['actual']
+        results_dict = {}
+        for targetFly in flies:
+            targetFly = f'{targetFly[0]}s{targetFly[1]}s{targetFly[2]}s'
+            modelSeries = modelFlies[targetFly][startDt:endDt]
+            actualSeries = actualFlies[targetFly][startDt:endDt]
+            
+            performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
+                                                       actualSeries=actualSeries,
+                                                       startDt = startDt, endDt= endDt,
+                                                       shortW = shortW, longW = longW, standardW = standardW, 
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+            performanceDf['point'] = targetFly
+            performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
+            results_dict[targetFly] = performanceDf
+
+        return results_dict
+
+            
+
+                
