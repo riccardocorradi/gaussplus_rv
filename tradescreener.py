@@ -89,15 +89,19 @@ class tradeScreener:
                              longW = longW)
 
     def singleItemPerformance(self, modelSeries, actualSeries, 
-                              startDt, endDt,
+                              startDt, endDt, numberSigma, stopLossSigma,
                               shortW, longW, standardW = 14):
         
         mispricingSeries = (actualSeries - modelSeries)[startDt:endDt]
         reversionSignal = self.buildSignal(mispricingSeries, shortW = shortW, longW = longW)
         position = pd.Series(0, index = mispricingSeries.index)
-        thr = mispricingSeries.rolling(standardW).std()
-        position.loc[(mispricingSeries < -thr) & (reversionSignal > 0)] = +1
-        position.loc[(mispricingSeries > thr) & (reversionSignal < 0)] = -1
+        thr = numberSigma * mispricingSeries.rolling(standardW).std()
+        
+        # SHORT WHEN ZSCORE IS LOW (low yields, overpriced)
+        position.loc[((mispricingSeries - mispricingSeries.rolling(standardW).mean()) < -thr) & (reversionSignal > 0)] = -1
+        
+        # LONG WHEN ZSCORE IS HIGH (high yields, underpriced)
+        position.loc[((mispricingSeries - mispricingSeries.rolling(standardW).mean())  > thr) & (reversionSignal < 0)] = +1
 
         trades = []
         current = None
@@ -111,26 +115,65 @@ class tradeScreener:
                         'entry_date': t,
                         'side': 'LONG' if pos == 1 else 'SHORT',
                         'entry_misp': mispricingSeries.loc[t],
-                        'entry_signal': reversionSignal.loc[t]
+                        'entry_signal': reversionSignal.loc[t],
+                        'entry_actual': actualSeries.loc[t],
                     }
+                    
+                    mu_0 = mispricingSeries.loc[:t].tail(standardW).mean()      # fixed mu and sigma at inception of trade
+                    sigma_0 = mispricingSeries.loc[:t].tail(standardW).std()    # but the z-score evolves in time
+                    zScore_0 = (mispricingSeries.loc[t] - mu_0) / sigma_0
+                    current.update({'mu_0': mu_0, 'sigma_0': sigma_0,  
+                                    'entry_z': zScore_0, 
+                                    'target': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0,
+                                    'exit': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0 + pos * stopLossSigma * sigma_0}) # we set the target freezing the model
+                        
             else:
-                if pos == 0:
+                exit_cond = False
+                z_score = (mispricingSeries.loc[t] - current['mu_0']) / current['sigma_0']
+                if current['side'] == 'SHORT':
+                    
+                    takeProfitCond = (actualSeries.loc[t] >= current['target'])
+                    stopLossCond = (actualSeries.loc[t] <= current['exit'])
+                    
+                
+                elif current['side'] == 'LONG':
+                    takeProfitCond = (actualSeries.loc[t] <= current['target'])
+                    stopLossCond = (actualSeries.loc[t] >= current['exit'])
+                    
+                
+                exit_cond = takeProfitCond or stopLossCond
+
+                if exit_cond:
                     current.update({
                         'exit_date': t,
                         'exit_misp': mispricingSeries.loc[t],
-                        'exit_signal': reversionSignal.loc[t]
+                        'exit_signal': reversionSignal.loc[t],
+                        'exit_z': z_score,
+                        'exit_actual': actualSeries.loc[t],
+                        'stop': stopLossCond,
+                        'reason': 'take_profit' if takeProfitCond else 'stop_loss'
+
                     })
                     trades.append(current)
                     current = None
 
         trades_df = pd.DataFrame(trades)
-        trades_df = trades_df[['entry_date', 'exit_date', 'side', 'entry_misp', 'exit_misp', 'entry_signal', 'exit_signal']]
-        trades_df['pnl'] = 2*((trades_df['side'] == 'LONG').astype(int) - 0.5) * (trades_df['exit_misp'] - trades_df['entry_misp'])
+        columns = ['entry_date','exit_date','side','entry_actual','exit_actual','entry_misp','exit_misp','entry_signal','exit_signal','entry_z','exit_z','stop', 'reason']
+        
+        if trades_df.empty:
+            return pd.DataFrame(columns=columns)
+        trades_df = trades_df[columns]
+        
+        direction = (trades_df['side'] == 'SHORT').astype(int)*2 - 1      # THIS IS SO THAT PNL IS POSITIVE WHEN YIELDS GO DOWN
+        trades_df['pnl'] = direction * (trades_df['exit_actual'] - trades_df['entry_actual'])
+    
         trades_df['days'] = (trades_df['exit_date'] - trades_df['entry_date']).dt.days
         trades_df['hit'] = trades_df['pnl'] > 0
+        #trades_df['stop'] = ((trades_df['side'] == 'LONG') & (trades_df['exit_z'] <= -stopLossSigma)) | ((trades_df['side'] == 'SHORT') & (trades_df['exit_z'] >= stopLossSigma))
+        
         return trades_df
     
-    def allOutrightBacktest(self, startDt, endDt, shortW, longW, standardW = 14):
+    def allOutrightBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
         results_dict = {}
         for maturity in self.maturitySet:
             modelSeries = self.modelData[maturity][startDt:endDt]
@@ -138,7 +181,8 @@ class tradeScreener:
             performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
-                                                       shortW = shortW, longW = longW, standardW = standardW)
+                                                       shortW = shortW, longW = longW, standardW = standardW,
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
             results_dict[maturity] = performanceDf
 
         results_df = pd.DataFrame([(
@@ -147,13 +191,14 @@ class tradeScreener:
              df.loc[df['pnl'] > 0]['pnl'].mean() / abs(df.loc[df['pnl'] < 0]['pnl'].mean()) if pd.notna(df.loc[df['pnl'] > 0]['pnl'].mean()) and df.loc[df['pnl'] < 0]['pnl'].mean() != 0 else pd.NA,
              df['days'].mean(),
              df['days'].median(),
-             results_dict[key].shape[0]
+             results_dict[key].shape[0],
+             df['stop'].mean()
              )) 
              for key, df in results_dict.items()], 
-             columns = ['maturity', 'hitrate', 'skew', 'avg days', 'median days','n_trades'])
+             columns = ['maturity', 'hitrate', 'skew', 'avg days', 'median days','n_trades', 'stop'])
         return results_df
 
-    def allSlopesBacktest(self, startDt, endDt, shortW, longW, standardW = 14):
+    def allSlopesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
         slopeDict = self.buildSlopes()
         modelSlopes = slopeDict['model']
         actualSlopes = slopeDict['actual']
@@ -165,7 +210,7 @@ class tradeScreener:
             performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
-                                                       shortW = shortW, longW = longW, standardW = standardW)
+                                                       shortW = shortW, longW = longW, standardW = standardW, numberSigma = numberSigma, stopLossSigma = stopLossSigma)
             results_dict[targetSlope] = performanceDf
 
         results_df = pd.DataFrame([(
@@ -174,14 +219,15 @@ class tradeScreener:
              df.loc[df['pnl'] > 0]['pnl'].mean() / abs(df.loc[df['pnl'] < 0]['pnl'].mean()) if pd.notna(df.loc[df['pnl'] > 0]['pnl'].mean()) and df.loc[df['pnl'] < 0]['pnl'].mean() != 0 else pd.NA,
              df['days'].mean(),
              df['days'].median(),
-             results_dict[key].shape[0]
+             results_dict[key].shape[0],
+             df['stop'].mean()
              )) 
              for key, df in results_dict.items()], 
-             columns = ['slope', 'hitrate', 'skew', 'avg days', 'median days','n_trades'])
+             columns = ['slope', 'hitrate', 'skew', 'avg days', 'median days','n_trades', 'stop'])
 
         return results_df
 
-    def allFliesBacktest(self, startDt, endDt, shortW, longW, standardW = 14):
+    def allFliesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
         flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
         flyDict = self.buildFlies()
         modelFlies = flyDict['model']
@@ -195,7 +241,8 @@ class tradeScreener:
             performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
-                                                       shortW = shortW, longW = longW, standardW = standardW)
+                                                       shortW = shortW, longW = longW, standardW = standardW, 
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
             results_dict[targetFly] = performanceDf
 
         results_df = pd.DataFrame([(
@@ -204,15 +251,17 @@ class tradeScreener:
              df.loc[df['pnl'] > 0]['pnl'].mean() / abs(df.loc[df['pnl'] < 0]['pnl'].mean()) if pd.notna(df.loc[df['pnl'] > 0]['pnl'].mean()) and df.loc[df['pnl'] < 0]['pnl'].mean() != 0 else pd.NA,
              df['days'].mean(),
              df['days'].median(),
-             results_dict[key].shape[0]
+             results_dict[key].shape[0],
+             df['stop'].mean()
+
              )) 
              for key, df in results_dict.items()], 
-             columns = ['fly', 'hitrate', 'skew', 'avg days', 'median days','n_trades'])
+             columns = ['fly', 'hitrate', 'skew', 'avg days', 'median days','n_trades', 'stop'])
 
         return results_df
 
     def plotModelVsActual(self, modelSeries, actualSeries, 
-                          startDt, endDt, leftPlotBp = False,
+                          startDt, endDt, backtestDf, leftPlotBp = False,
                           display_startDt = None, display_endDt = None,
                           shortW = 5, longW = 40, standardW = 14):
         
@@ -230,7 +279,7 @@ class tradeScreener:
             signalSeries = signalSeries[display_startDt:display_endDt]
             shortW_MA = shortW_MA[display_startDt:display_endDt]
             longW_MA = longW_MA[display_startDt:display_endDt]
-
+        
         fig, ax = plt.subplots(nrows= 1, ncols = 2, figsize = (20, 4))
         ax[0].plot(modelSeries, color = 'blue', linestyle = '--', label = 'model')
         ax[0].plot(actualSeries, color = 'red', linestyle = '-', label = 'actual')
@@ -249,33 +298,93 @@ class tradeScreener:
         ax[1].set_title('Fitting error and reversion')
         ax[1].yaxis.set_major_formatter(mtick.FuncFormatter(lambda y, _: f'{y*100:.1f} bp'))
         for i in [0,1]:
-            ax[i].fill_between(
-                x, ax[i].get_ylim()[0], ax[i].get_ylim()[1],
-                where=(signalSeries > 0 + signalSeries.rolling(standardW).std()),
-                color='green', alpha=0.1, interpolate=True
-            )
+        
+            plot_start = pd.Timestamp(display_startDt) if display_startDt is not None else modelSeries.index.min()
+            plot_end = pd.Timestamp(display_endDt) if display_endDt is not None else modelSeries.index.max()
 
-            ax[i].fill_between(
-                x, ax[i].get_ylim()[0], ax[i].get_ylim()[1],
-                where=(signalSeries < 0 - signalSeries.rolling(standardW).std()),
-                color='red', alpha=0.1, interpolate=True
-            )
+            mask = (backtestDf['exit_date'] >= plot_start) & (backtestDf['entry_date'] <= plot_end)
+            bt_plot = backtestDf.loc[mask].copy()
+
+            bt_plot['entry_plot'] = bt_plot['entry_date'].clip(lower=plot_start)
+            bt_plot['exit_plot'] = bt_plot['exit_date'].clip(upper=plot_end)
+            
+            for _, trade in bt_plot.iterrows():
+                color = 'green' if trade['side'] == 'LONG'  else 'red'
+                ax[i].axvspan(trade['entry_plot'], trade['exit_plot'], color=color, alpha=0.1)
+        
             ax[i].grid(True)
         
-    def outrightScreener_fwd(self, shortW = 5, longW= 40):
+    def outrightScreener_fwd(self, shortW = 5, longW= 40, numberSigma = 2):
         
         deltaTauList = [x for x in self.modelData_fwd.keys()]
         outputdf = pd.DataFrame()
         for deltaTau in deltaTauList:
             summaryDf = self.screener(model = self.modelData_fwd[deltaTau], 
                                         actual = self.actualData_fwd[deltaTau], 
-                                        shortW=shortW, longW=longW)
+                                        shortW=shortW, longW=longW, numberSigma=numberSigma)
             summaryDf.index = [f'{deltaTau}y{x}y' for x in summaryDf.index]
             outputdf = pd.concat([outputdf, summaryDf])
         #outputdf = outputdf.style.format("{:.6f}")
         return outputdf.round(6)
-
-
     
+    def allTradesOutrights(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+        results_dict = {}
+        for maturity in self.maturitySet:
+                    modelSeries = self.modelData[maturity][startDt:endDt]
+                    actualSeries = self.actualData[maturity][startDt:endDt]
+                    performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
+                                                            actualSeries=actualSeries,
+                                                            startDt = startDt, endDt= endDt,
+                                                            shortW = shortW, longW = longW, standardW = standardW,
+                                                            numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                    performanceDf['point'] = f'{maturity}y'
+                    performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
+                    results_dict[maturity] = performanceDf
 
-        
+
+        return results_dict
+
+    def allTradesSlopes(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+        slopeDict = self.buildSlopes()
+        modelSlopes = slopeDict['model']
+        actualSlopes = slopeDict['actual']
+        results_dict = {}
+        for targetSlope in modelSlopes.columns:
+            modelSeries = modelSlopes[targetSlope][startDt:endDt]
+            actualSeries = actualSlopes[targetSlope][startDt:endDt]
+            
+            performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
+                                                       actualSeries=actualSeries,
+                                                       startDt = startDt, endDt= endDt,
+                                                       shortW = shortW, longW = longW, standardW = standardW, numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+            performanceDf['point'] = targetSlope
+            performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
+            results_dict[targetSlope] = performanceDf
+
+        return results_dict
+    
+    def allTradesFlies(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
+        flyDict = self.buildFlies()
+        modelFlies = flyDict['model']
+        actualFlies = flyDict['actual']
+        results_dict = {}
+        for targetFly in flies:
+            targetFly = f'{targetFly[0]}s{targetFly[1]}s{targetFly[2]}s'
+            modelSeries = modelFlies[targetFly][startDt:endDt]
+            actualSeries = actualFlies[targetFly][startDt:endDt]
+            
+            performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
+                                                       actualSeries=actualSeries,
+                                                       startDt = startDt, endDt= endDt,
+                                                       shortW = shortW, longW = longW, standardW = standardW, 
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+            performanceDf['point'] = targetFly
+            performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
+            results_dict[targetFly] = performanceDf
+
+        return results_dict
+
+            
+
+                

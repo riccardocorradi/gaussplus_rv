@@ -49,7 +49,7 @@ def twoFactorPlot(estFactorsDf_full, limits, figsize = (20,3)):
 def factorsForwardsPlot(estFactorsDf_full, sampleDates, figsize = (20,6)):
     fig, ax = plt.subplots(nrows = 2, ncols = 1, figsize = figsize)
     ax[0].plot(estFactorsDf_full['medium'], color = 'blue', linestyle = '-.', label = 'factor')
-    ax[0].plot(estFactorsDf_full['1y1y'], color = 'blue', linestyle = '-', label = '1y1y')
+    ax[0].plot(estFactorsDf_full['2y1y'], color = 'blue', linestyle = '-', label = '2y1y')
     ax[0].axvline(x = pd.Timestamp(sampleDates[1]), color = 'grey', linestyle = '--')
     ax[0].set_title('Medium factor versus 2y-forward 1y')
     ax[0].grid(True)
