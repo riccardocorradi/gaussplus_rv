@@ -48,45 +48,58 @@ class tradeScreener:
             actualFlies[f'{fly[0]}s{fly[1]}s{fly[2]}s'] = self.actualData[fly[0]] - 2 * self.actualData[fly[1]] + self.actualData[fly[2]]
         return {'model': modelFlies, 'actual': actualFlies}
 
-    def screener(self, model, actual, shortW, longW):
+    def screener(self, model, actual, shortW, longW, zScoreW):
         
         mispricings = actual - model
         signals = self.buildSignal(mispricings, shortW = shortW, longW = longW)
+        rollMeans = mispricings.rolling(zScoreW).mean()
+        rollStds = mispricings.rolling(zScoreW).std()
+        
         
         modelLevels = model.iloc[-1]
         actualLevels = actual.iloc[-1]
+        rollMeansNow = rollMeans.iloc[-1]
+        rollStdsNow = rollStds.iloc[-1]
+        zscorenow = (mispricings.iloc[-1] - rollMeansNow) / rollStdsNow
         currentMispricing = mispricings.iloc[-1]
         currentSignals = signals.iloc[-1]
+
 
         summaryDf = pd.DataFrame({
                                   'model': modelLevels,
                                   'actual': actualLevels,
                                   'error': currentMispricing,
-                                  'signal': currentSignals})
+                                  'signal': currentSignals,
+                                  'rollMean': rollMeansNow,
+                                  'rollStd': rollStdsNow,
+                                  'zscore': zscorenow})
         
         return summaryDf
 
-    def outrightScreener(self, shortW = 5, longW = 40):
+    def outrightScreener(self, shortW = 5, longW = 40, zScoreW = 14):
         
         return self.screener(model = self.modelData[self.maturitySet], 
                              actual = self.actualData[self.maturitySet],
                              shortW = shortW,
-                             longW = longW)
+                             longW = longW,
+                             zScoreW = zScoreW)
     
-    def slopeScreener(self, shortW = 5, longW = 40):
+    def slopeScreener(self, shortW = 5, longW = 40, zScoreW = 14):
         slopeDict = self.buildSlopes()
 
         return self.screener(model = slopeDict['model'],
                              actual = slopeDict['actual'],
                              shortW = shortW,
-                             longW = longW)
+                             longW = longW,
+                             zScoreW = zScoreW)
     
-    def flyScreener(self, shortW = 5, longW = 40):
+    def flyScreener(self, shortW = 5, longW = 40, zScoreW = 14):
         flyDict = self.buildFlies()
         return self.screener(model = flyDict['model'],
                              actual = flyDict['actual'],
                              shortW = shortW,
-                             longW = longW)
+                             longW = longW,
+                             zScoreW = zScoreW)
 
     def singleItemPerformance(self, modelSeries, actualSeries, 
                               startDt, endDt, numberSigma, stopLossSigma,
