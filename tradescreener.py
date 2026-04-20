@@ -2,6 +2,7 @@ import pandas as pd
 from itertools import combinations
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
+import numpy as np
 
 class tradeScreener:
 
@@ -397,7 +398,37 @@ class tradeScreener:
             results_dict[targetFly] = performanceDf
 
         return results_dict
+    
+    def tenorDuration(self, tenor, ytm):
+        return -1 * (tenor) / (1 + ytm / 100)
 
-            
+    def factorSensitivity(self, marketValuePositions, yields, pricer):
+        tenors = [float(x) for x in marketValuePositions.keys()]
+        totalLoadings = np.zeros(3)
+        recap = []
+        for tenor in tenors:
+            tenorLoadings = pricer.factorLoadings(tau = tenor)
+            mv = marketValuePositions[tenor]
+            md = self.tenorDuration(tenor, yields[tenor])
+            dv01 = md * mv * 10**(-4)
+            totalLoadings += dv01 * tenorLoadings
+            sign = 'long' if mv > 0 else 'short' 
+            recap.append({'tenor': tenor, 'position': sign, 'market value': mv, 'mod duration': abs(md), 'DV01': dv01, \
+                          'short sensitivity': tenorLoadings[0], 'medium sensitivity': tenorLoadings[1], 'long sensitivity': tenorLoadings[2],
+                          'short DV01': tenorLoadings[0] * dv01, 
+                          'medium DV01': tenorLoadings[1] * dv01, 
+                          'long DV01': tenorLoadings[2] * dv01})
+        outputDf = pd.DataFrame(recap, columns = ['tenor', 'position', 'market value', 'mod duration', 'DV01', 
+                                              'short sensitivity', 'medium sensitivity', 'long sensitivity',
+                                              'short DV01', 'medium DV01', 'long DV01']).set_index('tenor')
+        
+        #outputDf.loc['Total'] = outputDf.select_dtypes(include='number').sum()
+        outputDf.loc['Total', ['short DV01', 'medium DV01', 'long DV01']] = outputDf[['short DV01', 'medium DV01', 'long DV01']].sum()
+        outputDf = outputDf.fillna('')
+        cols = ['market value', 'DV01', 'short DV01', 'medium DV01', 'long DV01']
+        
+        outputDf[cols] = outputDf[cols].map(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x)
+        
+        return outputDf
 
                 
