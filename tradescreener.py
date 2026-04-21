@@ -3,11 +3,15 @@ from itertools import combinations
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 import numpy as np
+import QuantLib as ql
+
+from swapengine import swapEngine
 
 class tradeScreener:
 
     def __init__(self, modelData, actualData, maturitySet,
-                 modelData_fwd, actualData_fwd, maturitySet_fwd):
+                 modelData_fwd, actualData_fwd, maturitySet_fwd, 
+                 swapEngine = None, swap_zeroCurve = None, swap_parCurve = None):
         self.modelData = modelData
         self.modelData.index = pd.to_datetime(self.modelData.index)
         self.actualData = actualData
@@ -23,6 +27,11 @@ class tradeScreener:
             self.actualData_fwd[key].index = pd.to_datetime(self.actualData_fwd[key].index)
 
         self.maturitySet_fwd = maturitySet_fwd
+        if swapEngine is not None:
+            self.swapEngine = swapEngine
+        
+        self.swap_zeroCurve = swap_zeroCurve
+        self.swap_parCurve = swap_parCurve
 
     def buildSignal(self, errorData, shortW, longW):
         signals = errorData.rolling(shortW).mean() - errorData.rolling(longW).mean()
@@ -430,5 +439,323 @@ class tradeScreener:
         outputDf[cols] = outputDf[cols].map(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x)
         
         return outputDf
+    
+    def singleItem_dailyPnl_swaps(self, modelSeries, actualSeries,
+                                      startDt, endDt, numberSigma, stopLossSigma,
+                                      shortW, longW, standardW=14,
+                                      base_notional=1_000_000):
 
-                
+        mispricingSeries = (actualSeries - modelSeries)[startDt:endDt]
+        reversionSignal = self.buildSignal(mispricingSeries, shortW=shortW, longW=longW)
+        roll_mean = mispricingSeries.rolling(standardW).mean()
+        roll_std = mispricingSeries.rolling(standardW).std()
+        thr = numberSigma * roll_std
+
+        position = pd.Series(0, index=mispricingSeries.index)
+
+        position.loc[((mispricingSeries - roll_mean) < -thr) & (reversionSignal > 0)] = -1
+        position.loc[((mispricingSeries - roll_mean) >  thr) & (reversionSignal < 0)] = 1
+
+        pnl_ts = pd.Series(0.0, index=mispricingSeries.index, name='daily_pnl')
+        current = None
+
+        for t in position.index:
+            pos = position.loc[t]
+
+            if current is None:
+                if pos == 0:
+                    continue
+
+                side = 'LONG' if pos == 1 else 'SHORT'
+                mu_0 = mispricingSeries.loc[:t].tail(standardW).mean()
+                sigma_0 = mispricingSeries.loc[:t].tail(standardW).std()
+
+                trade_book = self.swapEngine._build_trade_book(
+                    trade_name=modelSeries.name,
+                    side=side,
+                    entry_ts=t,
+                    zero_curve_row=self.swap_zeroCurve.loc[t],
+                    par_curve_row=self.swap_parCurve.loc[t],
+                    base_notional=base_notional
+                )
+                entry_npv = sum(x['entry_npv'] for x in trade_book)
+
+                current = {
+                    'entry_date': t,
+                    'side': side,
+                    'mu_0': mu_0,
+                    'sigma_0': sigma_0,
+                    'target': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0,
+                    'exit': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0 + pos * stopLossSigma * sigma_0,
+                    'trade_book': trade_book,
+                    'entry_npv': entry_npv,
+                    'prev_mtm': entry_npv,
+                }
+                continue
+
+            mtm = self.swapEngine._mark_trade_book(
+                trade_book=current['trade_book'],
+                val_ts=t,
+                zero_curve_row=self.swap_zeroCurve.loc[t]
+            )
+
+            daily_pnl = mtm - current['prev_mtm']
+            pnl_ts.loc[t] = daily_pnl
+            current['prev_mtm'] = mtm
+
+            if current['side'] == 'SHORT':
+                takeProfitCond = actualSeries.loc[t] >= current['target']
+                stopLossCond = actualSeries.loc[t] <= current['exit']
+            else:
+                takeProfitCond = actualSeries.loc[t] <= current['target']
+                stopLossCond = actualSeries.loc[t] >= current['exit']
+
+            if takeProfitCond or stopLossCond:
+                current = None
+
+        return pnl_ts
+    
+    def singleItemPerformance_swaps(self, modelSeries, actualSeries,
+                                startDt, endDt, numberSigma, stopLossSigma,
+                                shortW, longW, standardW=14,
+                                base_notional=1_000_000):
+
+        mispricingSeries = (actualSeries - modelSeries)[startDt:endDt]
+        reversionSignal = self.buildSignal(mispricingSeries, shortW=shortW, longW=longW)
+        roll_mean = mispricingSeries.rolling(standardW).mean()
+        roll_std = mispricingSeries.rolling(standardW).std()
+        thr = numberSigma * roll_std
+
+        position = pd.Series(0, index=mispricingSeries.index)
+        position.loc[((mispricingSeries - roll_mean) < -thr) & (reversionSignal > 0)] = -1
+        position.loc[((mispricingSeries - roll_mean) >  thr) & (reversionSignal < 0)] = 1
+
+        trades = []
+        current = None
+
+        for t in position.index:
+            pos = position.loc[t]
+
+            if current is None:
+                if pos == 0:
+                    continue
+
+                side = 'LONG' if pos == 1 else 'SHORT'
+                mu_0 = mispricingSeries.loc[:t].tail(standardW).mean()
+                sigma_0 = mispricingSeries.loc[:t].tail(standardW).std()
+                entry_z = (mispricingSeries.loc[t] - mu_0) / sigma_0
+
+                trade_book = self.swapEngine._build_trade_book(
+                    trade_name=modelSeries.name,
+                    side=side,
+                    entry_ts=t,
+                    zero_curve_row=self.swap_zeroCurve.loc[t],
+                    par_curve_row=self.swap_parCurve.loc[t],
+                    base_notional=base_notional
+                )
+                entry_npv = sum(x['entry_npv'] for x in trade_book)
+
+                current = {
+                    'entry_date': t,
+                    'side': side,
+                    'entry_actual': actualSeries.loc[t],
+                    'entry_misp': mispricingSeries.loc[t],
+                    'entry_signal': reversionSignal.loc[t],
+                    'mu_0': mu_0,
+                    'sigma_0': sigma_0,
+                    'entry_z': entry_z,
+                    'target': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0,
+                    'exit': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0 + pos * stopLossSigma * sigma_0,
+                    'trade_book': trade_book,
+                    'entry_npv': entry_npv,
+                    'prev_mtm': entry_npv,
+                }
+                continue
+
+            mtm = self.swapEngine._mark_trade_book(
+                trade_book=current['trade_book'],
+                val_ts=t,
+                zero_curve_row=self.swap_zeroCurve.loc[t]
+            )
+            daily_pnl = mtm - current['prev_mtm']
+            cum_pnl = mtm - current['entry_npv']
+            current['prev_mtm'] = mtm
+
+            z_score = (mispricingSeries.loc[t] - current['mu_0']) / current['sigma_0']
+
+            if current['side'] == 'SHORT':
+                takeProfitCond = actualSeries.loc[t] >= current['target']
+                stopLossCond = actualSeries.loc[t] <= current['exit']
+            else:
+                takeProfitCond = actualSeries.loc[t] <= current['target']
+                stopLossCond = actualSeries.loc[t] >= current['exit']
+
+            if takeProfitCond or stopLossCond:
+                current.update({
+                    'exit_date': t,
+                    'exit_actual': actualSeries.loc[t],
+                    'exit_misp': mispricingSeries.loc[t],
+                    'exit_signal': reversionSignal.loc[t],
+                    'exit_z': z_score,
+                    'exit_mtm': mtm,
+                    'pnl': cum_pnl,
+                    'last_daily_pnl': daily_pnl,
+                    'stop': stopLossCond,
+                    'reason': 'take_profit' if takeProfitCond else 'stop_loss',
+                })
+                trades.append(current)
+                current = None
+
+        cols = [
+            'entry_date', 'exit_date', 'side',
+            'entry_actual', 'exit_actual',
+            'entry_misp', 'exit_misp',
+            'entry_signal', 'exit_signal',
+            'entry_z', 'exit_z',
+            'entry_npv', 'exit_mtm', 'pnl', 'last_daily_pnl',
+            'stop', 'reason'
+        ]
+
+        trades_df = pd.DataFrame(trades)
+        if trades_df.empty:
+            return pd.DataFrame(columns=cols + ['days', 'hit'])
+
+        trades_df = trades_df[cols]
+        trades_df['days'] = (trades_df['exit_date'] - trades_df['entry_date']).dt.days
+        trades_df['hit'] = trades_df['pnl'] > 0
+
+        return trades_df
+
+    def allOutrightBacktest_swaps(self, startDt, endDt, shortW, longW,
+                              standardW=14, numberSigma=2, stopLossSigma=2.5,
+                              base_notional=1_000_000):
+        results_dict = {}
+
+        for maturity in self.maturitySet:
+            modelSeries = self.modelData[maturity][startDt:endDt]
+            actualSeries = self.actualData[maturity][startDt:endDt]
+
+            performanceDf = self.singleItemPerformance_swaps(
+                modelSeries=modelSeries,
+                actualSeries=actualSeries,
+                startDt=startDt,
+                endDt=endDt,
+                shortW=shortW,
+                longW=longW,
+                standardW=standardW,
+                numberSigma=numberSigma,
+                stopLossSigma=stopLossSigma,
+                base_notional=base_notional
+            )
+            results_dict[maturity] = performanceDf
+
+        results_df = pd.DataFrame([
+            (
+                key,
+                (df['pnl'] > 0).mean(),
+                df.loc[df['pnl'] > 0, 'pnl'].mean() / abs(df.loc[df['pnl'] < 0, 'pnl'].mean())
+                if pd.notna(df.loc[df['pnl'] > 0, 'pnl'].mean()) and df.loc[df['pnl'] < 0, 'pnl'].mean() != 0
+                else pd.NA,
+                df['days'].mean(),
+                df['days'].median(),
+                df.shape[0],
+                df['stop'].mean(),
+                df['pnl'].mean(),
+                df['pnl'].sum()
+            )
+            for key, df in results_dict.items()
+        ], columns=['maturity', 'hitrate', 'skew', 'avg days', 'median days', 'n_trades', 'stop', 'avg pnl', 'tot pnl'])
+
+        return results_df
+
+    def allSlopesBacktest_swaps(self, startDt, endDt, shortW, longW,
+                            standardW=14, numberSigma=2, stopLossSigma=2.5,
+                            base_notional=1_000_000):
+        slopeDict = self.buildSlopes()
+        modelSlopes = slopeDict['model']
+        actualSlopes = slopeDict['actual']
+        results_dict = {}
+
+        for targetSlope in modelSlopes.columns:
+            modelSeries = modelSlopes[targetSlope][startDt:endDt]
+            actualSeries = actualSlopes[targetSlope][startDt:endDt]
+
+            performanceDf = self.singleItemPerformance_swaps(
+                modelSeries=modelSeries,
+                actualSeries=actualSeries,
+                startDt=startDt,
+                endDt=endDt,
+                shortW=shortW,
+                longW=longW,
+                standardW=standardW,
+                numberSigma=numberSigma,
+                stopLossSigma=stopLossSigma,
+                base_notional=base_notional
+            )
+            results_dict[targetSlope] = performanceDf
+
+        results_df = pd.DataFrame([
+            (
+                key,
+                (df['pnl'] > 0).mean(),
+                df.loc[df['pnl'] > 0, 'pnl'].mean() / abs(df.loc[df['pnl'] < 0, 'pnl'].mean())
+                if pd.notna(df.loc[df['pnl'] > 0, 'pnl'].mean()) and df.loc[df['pnl'] < 0, 'pnl'].mean() != 0
+                else pd.NA,
+                df['days'].mean(),
+                df['days'].median(),
+                df.shape[0],
+                df['stop'].mean(),
+                df['pnl'].mean(),
+                df['pnl'].sum()
+            )
+            for key, df in results_dict.items()
+        ], columns=['slope', 'hitrate', 'skew', 'avg days', 'median days', 'n_trades', 'stop', 'avg pnl', 'tot pnl'])
+
+        return results_df
+
+    def allFliesBacktest_swaps(self, startDt, endDt, shortW, longW,
+                           standardW=14, numberSigma=2, stopLossSigma=2.5,
+                           base_notional=1_000_000):
+        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
+        flyDict = self.buildFlies()
+        modelFlies = flyDict['model']
+        actualFlies = flyDict['actual']
+        results_dict = {}
+
+        for fly in flies:
+            targetFly = f'{fly[0]}s{fly[1]}s{fly[2]}s'
+            modelSeries = modelFlies[targetFly][startDt:endDt]
+            actualSeries = actualFlies[targetFly][startDt:endDt]
+
+            performanceDf = self.singleItemPerformance_swaps(
+                modelSeries=modelSeries,
+                actualSeries=actualSeries,
+                startDt=startDt,
+                endDt=endDt,
+                shortW=shortW,
+                longW=longW,
+                standardW=standardW,
+                numberSigma=numberSigma,
+                stopLossSigma=stopLossSigma,
+                base_notional=base_notional
+            )
+            results_dict[targetFly] = performanceDf
+
+        results_df = pd.DataFrame([
+            (
+                key,
+                (df['pnl'] > 0).mean(),
+                df.loc[df['pnl'] > 0, 'pnl'].mean() / abs(df.loc[df['pnl'] < 0, 'pnl'].mean())
+                if pd.notna(df.loc[df['pnl'] > 0, 'pnl'].mean()) and df.loc[df['pnl'] < 0, 'pnl'].mean() != 0
+                else pd.NA,
+                df['days'].mean(),
+                df['days'].median(),
+                df.shape[0],
+                df['stop'].mean(),
+                df['pnl'].mean(),
+                df['pnl'].sum()
+            )
+            for key, df in results_dict.items()
+        ], columns=['fly', 'hitrate', 'skew', 'avg days', 'median days', 'n_trades', 'stop', 'avg pnl', 'tot pnl'])
+
+        return results_df
