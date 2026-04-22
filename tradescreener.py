@@ -113,7 +113,7 @@ class tradeScreener:
 
     def singleItemPerformance(self, modelSeries, actualSeries, 
                               startDt, endDt, numberSigma, stopLossSigma,
-                              shortW, longW, standardW = 14):
+                              shortW, longW, standardW = 14, stopLossAboveEntry = True):
         
         mispricingSeries = (actualSeries - modelSeries)[startDt:endDt]
         reversionSignal = self.buildSignal(mispricingSeries, shortW = shortW, longW = longW)
@@ -145,10 +145,15 @@ class tradeScreener:
                     mu_0 = mispricingSeries.loc[:t].tail(standardW).mean()      # fixed mu and sigma at inception of trade
                     sigma_0 = mispricingSeries.loc[:t].tail(standardW).std()    # but the z-score evolves in time
                     zScore_0 = (mispricingSeries.loc[t] - mu_0) / sigma_0
+                    stopZ = zScore_0 + stopLossSigma*pos if stopLossAboveEntry else stopLossSigma*pos
+                    targetPrice = actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0
+                    exitPrice = actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0 + stopZ * sigma_0
+
                     current.update({'mu_0': mu_0, 'sigma_0': sigma_0,  
                                     'entry_z': zScore_0, 
-                                    'target': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0,
-                                    'exit': actualSeries.loc[t] - mispricingSeries.loc[t] + mu_0 + pos * stopLossSigma * sigma_0}) # we set the target freezing the model
+                                    'stopZ': stopZ,
+                                    'target': targetPrice,
+                                    'stopPrice': exitPrice}) # we set the target freezing the model
                         
             else:
                 exit_cond = False
@@ -156,12 +161,12 @@ class tradeScreener:
                 if current['side'] == 'SHORT':
                     
                     takeProfitCond = (actualSeries.loc[t] >= current['target'])
-                    stopLossCond = (actualSeries.loc[t] <= current['exit'])
+                    stopLossCond = (actualSeries.loc[t] <= current['stopPrice'])
                     
                 
                 elif current['side'] == 'LONG':
                     takeProfitCond = (actualSeries.loc[t] <= current['target'])
-                    stopLossCond = (actualSeries.loc[t] >= current['exit'])
+                    stopLossCond = (actualSeries.loc[t] >= current['stopPrice'])
                     
                 
                 exit_cond = takeProfitCond or stopLossCond
@@ -181,7 +186,9 @@ class tradeScreener:
                     current = None
 
         trades_df = pd.DataFrame(trades)
-        columns = ['entry_date','exit_date','side','entry_actual','exit_actual','entry_misp','exit_misp','entry_signal','exit_signal','entry_z','exit_z','stop', 'reason']
+        columns = ['entry_date','exit_date','side','entry_actual','target','stopPrice','exit_actual',
+                   'entry_misp','exit_misp',
+                   'entry_signal','exit_signal','entry_z','exit_z','stop', 'reason']
         
         if trades_df.empty:
             return pd.DataFrame(columns=columns)
@@ -196,7 +203,8 @@ class tradeScreener:
         
         return trades_df
     
-    def allOutrightBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+    def allOutrightBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, 
+                            stopLossSigma = 2.5, stopLossAboveEntry = True):
         results_dict = {}
         for maturity in self.maturitySet:
             modelSeries = self.modelData[maturity][startDt:endDt]
@@ -205,7 +213,8 @@ class tradeScreener:
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
                                                        shortW = shortW, longW = longW, standardW = standardW,
-                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma, 
+                                                       stopLossAboveEntry = stopLossAboveEntry)
             results_dict[maturity] = performanceDf
 
         results_df = pd.DataFrame([(
@@ -221,7 +230,7 @@ class tradeScreener:
              columns = ['maturity', 'hitrate', 'skew', 'avg days', 'median days','n_trades', 'stop'])
         return results_df
 
-    def allSlopesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+    def allSlopesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
         slopeDict = self.buildSlopes()
         modelSlopes = slopeDict['model']
         actualSlopes = slopeDict['actual']
@@ -233,7 +242,7 @@ class tradeScreener:
             performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
-                                                       shortW = shortW, longW = longW, standardW = standardW, numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                                                       shortW = shortW, longW = longW, standardW = standardW, numberSigma = numberSigma, stopLossSigma = stopLossSigma, stopLossAboveEntry = stopLossAboveEntry)
             results_dict[targetSlope] = performanceDf
 
         results_df = pd.DataFrame([(
@@ -250,7 +259,7 @@ class tradeScreener:
 
         return results_df
 
-    def allFliesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+    def allFliesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
         flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
         flyDict = self.buildFlies()
         modelFlies = flyDict['model']
@@ -265,7 +274,7 @@ class tradeScreener:
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
                                                        shortW = shortW, longW = longW, standardW = standardW, 
-                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma, stopLossAboveEntry = stopLossAboveEntry)
             results_dict[targetFly] = performanceDf
 
         results_df = pd.DataFrame([(
@@ -350,7 +359,7 @@ class tradeScreener:
         #outputdf = outputdf.style.format("{:.6f}")
         return outputdf.round(6)
     
-    def allTradesOutrights(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+    def allTradesOutrights(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
         results_dict = {}
         for maturity in self.maturitySet:
                     modelSeries = self.modelData[maturity][startDt:endDt]
@@ -359,7 +368,7 @@ class tradeScreener:
                                                             actualSeries=actualSeries,
                                                             startDt = startDt, endDt= endDt,
                                                             shortW = shortW, longW = longW, standardW = standardW,
-                                                            numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                                                            numberSigma = numberSigma, stopLossSigma = stopLossSigma, stopLossAboveEntry = stopLossAboveEntry)
                     performanceDf['point'] = f'{maturity}y'
                     performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
                     results_dict[maturity] = performanceDf
@@ -367,7 +376,7 @@ class tradeScreener:
 
         return results_dict
 
-    def allTradesSlopes(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+    def allTradesSlopes(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
         slopeDict = self.buildSlopes()
         modelSlopes = slopeDict['model']
         actualSlopes = slopeDict['actual']
@@ -379,14 +388,15 @@ class tradeScreener:
             performanceDf = self.singleItemPerformance(modelSeries=modelSeries,
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
-                                                       shortW = shortW, longW = longW, standardW = standardW, numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                                                       shortW = shortW, longW = longW, standardW = standardW, 
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma, stopLossAboveEntry = stopLossAboveEntry)
             performanceDf['point'] = targetSlope
             performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
             results_dict[targetSlope] = performanceDf
 
         return results_dict
     
-    def allTradesFlies(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5):
+    def allTradesFlies(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
         flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
         flyDict = self.buildFlies()
         modelFlies = flyDict['model']
@@ -401,7 +411,7 @@ class tradeScreener:
                                                        actualSeries=actualSeries,
                                                        startDt = startDt, endDt= endDt,
                                                        shortW = shortW, longW = longW, standardW = standardW, 
-                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma)
+                                                       numberSigma = numberSigma, stopLossSigma = stopLossSigma, stopLossAboveEntry = stopLossAboveEntry)
             performanceDf['point'] = targetFly
             performanceDf = performanceDf[['point'] + [ col for col in performanceDf.columns if col != 'point']]
             results_dict[targetFly] = performanceDf
