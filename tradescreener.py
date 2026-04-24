@@ -37,9 +37,9 @@ class tradeScreener:
         signals = errorData.rolling(shortW).mean() - errorData.rolling(longW).mean()
         return signals
     
-    def buildSlopes(self):
+    def buildSlopes(self, minSpacing = 1):
 
-        slopes = [x for x in combinations(self.maturitySet, 2)]
+        slopes = [x for x in combinations(self.maturitySet, 2) if abs(x[1] - x[0]) >= minSpacing]
         modelSlopes = pd.DataFrame()
         actualSlopes = pd.DataFrame()
         
@@ -49,8 +49,8 @@ class tradeScreener:
 
         return {'model':modelSlopes, 'actual': actualSlopes}
     
-    def buildFlies(self):
-        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
+    def buildFlies(self, minSpacing = 1):
+        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j) and abs(j - i) >= minSpacing and abs(k - j) >= minSpacing]
         modelFlies = pd.DataFrame()
         actualFlies = pd.DataFrame()
         for fly in flies:
@@ -230,8 +230,8 @@ class tradeScreener:
              columns = ['maturity', 'hitrate', 'skew', 'avg days', 'median days','n_trades', 'stop'])
         return results_df
 
-    def allSlopesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
-        slopeDict = self.buildSlopes()
+    def allSlopesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True, minSpacing = 1):
+        slopeDict = self.buildSlopes(minSpacing=minSpacing)
         modelSlopes = slopeDict['model']
         actualSlopes = slopeDict['actual']
         results_dict = {}
@@ -259,8 +259,8 @@ class tradeScreener:
 
         return results_df
 
-    def allFliesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True):
-        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j)]
+    def allFliesBacktest(self, startDt, endDt, shortW, longW, standardW = 14, numberSigma = 2, stopLossSigma = 2.5, stopLossAboveEntry = True, minSpacing = 1):
+        flies = [(i, j, k) for i, j, k in combinations(self.maturitySet, 3) if (j - i) == (k - j) and abs(j - i) >= minSpacing and abs(k - j) >= minSpacing]
         flyDict = self.buildFlies()
         modelFlies = flyDict['model']
         actualFlies = flyDict['actual']
