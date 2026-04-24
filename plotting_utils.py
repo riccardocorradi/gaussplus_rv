@@ -35,6 +35,7 @@ def threeFactorPlot(estFactorsDf_full, figsize = (20,3)):
     ax.plot(estFactorsDf_full['short'], color = 'blue')
     ax.plot(estFactorsDf_full['medium'], color = 'red', label = 'medium')
     ax.plot(estFactorsDf_full['long'], color = 'orange', label = 'long')
+    ax.axhline(y = 0, color = 'grey', linestyle = '--')
     ax.legend()
     ax.set_title('Evolution of latent factors')
 
