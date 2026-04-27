@@ -74,7 +74,7 @@ def factorsForwardsPlot(estFactorsDf_full, sampleDates, figsize = (20,6)):
     ax[1].grid(True)
     ax[1].legend()
 
-def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6)):
+def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6), export = False, exportName = None):
     fig, ax = plt.subplots(figsize=figsize)
 
     cmap = plt.cm.Blues
@@ -102,26 +102,39 @@ def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6)):
     # colorbar
     cbar = plt.colorbar(im)
     cbar.set_label("bps")
-
+    bsic.apply_bsic_style(fig, ax)
     plt.tight_layout()
+    if export:
+        plt.savefig(f'{exportName}.png', dpi = 300)
+        bsic.export_figure(fig = fig, filename = exportName)
     plt.show()
 
 def actualVsFittedCurve(targetDate, fittedTs_full_df, termStructurePath, 
-                        tenorsAbove= 4, figsize = (20,3)):
+                        tenorsAbove= 4, figsize = (20,3), title = None, export = False, exportName = None):
     fig, ax = plt.subplots(nrows = 1, ncols = 2, figsize = figsize)
     fittedCurve = fittedTs_full_df.loc[targetDate]
     actualCurve =termStructurePath.drop('short', axis = 1).loc[targetDate]
 
-    ax[0].plot(fittedCurve, color = 'blue', label = 'fitted')
-    ax[0].plot(actualCurve, color = 'red', label = 'actual')
+    ax[0].plot(fittedCurve, label = 'fitted')
+    ax[0].plot(actualCurve, label = 'actual')
     ax[0].legend()
+    ax[0].yaxis.set_major_formatter(mtick.FuncFormatter(lambda y, _: f'{y:.2f}%'))
     ax[0].set_title(f'Model versus actual zero curve on {targetDate}')
 
     selectedTenors = [x for x in termStructurePath.drop('short', axis = 1).columns if int(x) > tenorsAbove]
     selectedMispr = (fittedCurve[selectedTenors] - actualCurve[selectedTenors]).values
-    ax[1].bar(selectedTenors, selectedMispr, color = 'purple')
+    ax[1].bar(selectedTenors, selectedMispr)
     ax[1].yaxis.set_major_formatter(mtick.FuncFormatter(lambda y, _: f'{y*100:.0f} bps'))
-    ax[1].set_title(f'Fitted yield - Actual yield on {targetDate}')
+    ax[1].set_title(f'Fitted yield - Actual yield on {targetDate}, tenors above {tenorsAbove}y')
+    if title:
+        plt.suptitle(title)
+    plt.tight_layout(rect=[0, 0, 1, 1.05])
+    if export:
+        plt.savefig(f'{exportName}.png', dpi = 300)
+        bsic.export_figure(fig = fig, filename = exportName)
+    
+    plt.show()
+
 
 def currentErrorsHeatmap_fwd(fittedForwardTs_full, forwardTermStructurePath, figsize = (12, 6)):
     fig, ax = plt.subplots(figsize=figsize)
