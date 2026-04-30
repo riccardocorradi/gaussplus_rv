@@ -74,7 +74,7 @@ def factorsForwardsPlot(estFactorsDf_full, sampleDates, figsize = (20,6)):
     ax[1].grid(True)
     ax[1].legend()
 
-def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6), export = False, exportName = None):
+def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6), export = False, exportName = None, title = None):
     fig, ax = plt.subplots(figsize=figsize)
 
     cmap = plt.cm.Blues
@@ -86,7 +86,10 @@ def fittingErrorsHeatmap(fittingErrors_byYear, figsize = (12, 6), export = False
     ax.set_yticklabels(fittingErrors_byYear.index)
     ax.set_xlabel("Year")
     ax.set_ylabel("Maturity")
-    ax.set_title("Root Mean Squared Fitting Errors (bps)")
+    if title:
+        ax.set_title(title)
+    else:
+        ax.set_title("Root Mean Squared Fitting Errors (bps)")
 
     norm = im.norm
     threshold = (norm.vmax + norm.vmin) / 2
